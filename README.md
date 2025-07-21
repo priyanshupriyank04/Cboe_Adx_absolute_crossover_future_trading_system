@@ -39,4 +39,4 @@ This trading system scans **all current month NSE stock futures** and generates 
 2. Ensure **PostgreSQL** is running (tables will be created automatically if missing).
 3. Run the system:
    ```bash
-   python main.py
+   python alert_absolute.py
