@@ -821,7 +821,110 @@ def prepare_all_futures_data(adx_period=5):
     logging.info("All contracts updated with OHLC + indicators.")
 
 
-prepare_all_futures_data(adx_period=5)
+# prepare_all_futures_data(adx_period=5)
+
+import logging
+import pandas as pd
+
+def run_absolute_threshold_strategy():
+    """
+    Strategy 2 (3-day absolute threshold crossover):
+    - Bullish Trigger:
+        odd_bull crosses ABOVE 15 (on day -1 or 0)
+        AND di_plus crosses ABOVE 9 (on day -1 or 0)
+
+    - Bearish Trigger:
+        odd_bear crosses ABOVE 15 (on day -1 or 0)
+        AND di_minus crosses ABOVE 9 (on day -1 or 0)
+
+    Crossovers can happen on different days within the last 2 days.
+    Saves results to:
+        - red_absolute.csv  (bearish triggers, one per row)
+        - green_absolute.csv (bullish triggers, one per row)
+    """
+    conn = connect_to_db()
+    if not conn:
+        logging.error("DB connection failed. Cannot run absolute threshold strategy.")
+        return
+
+    cur = conn.cursor()
+    cur.execute("SELECT tradingsymbol FROM current_month_futures;")
+    futures_list = cur.fetchall()
+
+    bearish_triggers = []
+    bullish_triggers = []
+
+    for (tradingsymbol,) in futures_list:
+        table_name = f"ohlc_{tradingsymbol.lower()}"
+        try:
+            # Check if table exists
+            cur.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = %s
+                );
+            """, (table_name,))
+            exists = cur.fetchone()[0]
+            if not exists:
+                continue
+
+            # Fetch last 3 rows (oldest first for easier indexing)
+            cur.execute(f"""
+                SELECT date, odd_bull, odd_bear, di_plus, di_minus
+                FROM {table_name}
+                ORDER BY date DESC
+                LIMIT 3;
+            """)
+            rows = cur.fetchall()
+            if len(rows) < 3:
+                continue
+
+            df = pd.DataFrame(rows, columns=["date", "odd_bull", "odd_bear", "di_plus", "di_minus"])
+            df = df.astype(float, errors="ignore")
+            df = df.iloc[::-1].reset_index(drop=True)  # oldest to newest (index 0,1,2)
+
+            # Helper to detect fixed-level crossover
+            def detect_level_cross(series, level, idx):
+                return series[idx-1] <= level and series[idx] > level
+
+            # Check for crossovers on -1 (yesterday, idx=1) and 0 (today, idx=2)
+            bull_cboe_cross = any(detect_level_cross(df["odd_bull"], 15, idx) for idx in [1, 2])
+            bull_di_cross = any(detect_level_cross(df["di_plus"], 9, idx) for idx in [1, 2])
+
+            bear_cboe_cross = any(detect_level_cross(df["odd_bear"], 15, idx) for idx in [1, 2])
+            bear_di_cross = any(detect_level_cross(df["di_minus"], 9, idx) for idx in [1, 2])
+
+            # Final triggers
+            if bull_cboe_cross and bull_di_cross:
+                bullish_triggers.append(tradingsymbol)
+                logging.info(f"BULLISH ABSOLUTE TRIGGER: {tradingsymbol}")
+
+            if bear_cboe_cross and bear_di_cross:
+                bearish_triggers.append(tradingsymbol)
+                logging.info(f"BEARISH ABSOLUTE TRIGGER: {tradingsymbol}")
+
+        except Exception as e:
+            logging.error(f"Error processing {table_name}: {e}")
+            continue
+
+    cur.close()
+    conn.close()
+
+    # Save results to CSVs
+    with open("green_absolute.csv", "w", newline="") as f_bull:
+        for symbol in bullish_triggers:
+            f_bull.write(symbol + "\n")
+
+    with open("red_absolute.csv", "w", newline="") as f_bear:
+        for symbol in bearish_triggers:
+            f_bear.write(symbol + "\n")
+
+    logging.info(f"Strategy 2 completed. Bullish: {len(bullish_triggers)}, Bearish: {len(bearish_triggers)} contracts.")
+
+# Run the strategy
+run_absolute_threshold_strategy()
+
+
 
 
 
